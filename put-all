@@ -3,7 +3,11 @@ put static/views/asd.html static/views/asd.html
 put static/asd.tsv static/asd.tsv
 put static/test.txt static/test.txt
 
+put static/css/default_plot.css static/css/default_plot.css
+
 put static/js/asd-plot.js static/js/asd-plot.js
+put static/js/nv.d3.js static/js/nv.d3.js
+put static/js/nv.d3.min.js static/js/nv.d3.min.js
 put static/js/asd-plot.coffee static/js/asd-plot.coffee
 put static/js/asd-plot.map static/js/asd-plot.map
 

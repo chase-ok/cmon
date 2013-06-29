@@ -19,8 +19,8 @@ def compute_asd(start_time, duration):
     return freq, np.sqrt(power)
 
 DAEMON_FILE = "{0}/asd.npz".format(utils.DATA)
-DAEMON_DURATION = 60
-DAEMON_REFRESH = 10
+DAEMON_DURATION = 5
+DAEMON_REFRESH = 1
 DAEMON_OFFSET = 94392725
 
 def daemon():
@@ -41,7 +41,7 @@ def daemon():
 
 def read_from_daemon(native_python=False):
     import numpy as np
-    
+
     data = np.load(DAEMON_FILE)
     if native_python:
         return {'time': float(data['time']),

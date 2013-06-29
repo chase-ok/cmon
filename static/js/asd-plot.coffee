@@ -1,79 +1,121 @@
-
 d3 = @d3
 console = @console
 
 describe = (obj, attrs) ->
-    for attr, value in attrs
-        obj.attr attr, value
+    for attr, value of attrs
+        obj = obj.attr attr, value
     obj
 
+mergeObj = (base, newObj) ->
+    base = {} unless base?
+    for key, value of newObj
+        base[key] = value if value?
+    base
+
 class Plot
-    constructor: (@dim) ->
-        @margin = {top: 20, right: 20, bottom: 30, left: 50}
+    constructor: (@rootSelector="body") ->
+        @root = d3.select @rootSelector
+
+        @dim = {x: @root.attr("width"), y: @root.attr("height")}
+        @margin = {top: 20, right: 20, bottom: 40, left: 50}
         @plotDim = 
             x: @dim.x - @margin.left - @margin.right
             y: @dim.y - @margin.top - @margin.bottom
+
         @setScale()
-        @domRoot = "body"
+        @setTicks()
+        @setDefined()
+        @setAccessor
+            x: (d) -> d[0]
+            y: (d) -> d[1]
+        @setLabel
+            x: "x"
+            y: "y"
+            title: ""
+
         @prepared = false
+        @drawn = false
         @showGrid = true
 
-    logLog: -> setScale({x: "log", y: "log"})
-    semilogX: -> setScale({x: "log", y: "linear"})
-    semilogY: -> setScale({x: "linear", y: "log"})
+    select: (selector) -> d3.select("#{@rootSelector} #{selector}")
+
+    logLog: -> @setScale({x: "log", y: "log"})
+    semilogX: -> @setScale({x: "log", y: "linear"})
+    semilogY: -> @setScale({x: "linear", y: "log"})
 
     setScale: (type={x:"linear", y:"linear"}) ->
-        @scaleType = 
-            x: type.x ? @scaleType.x
-            y: type.y ? @scaleType.y
+        @scaleType = mergeObj @scaleType, type
+        alreadySet = @scale?
         @scale = 
-            x: d3.scale[xType]().clamp(yes).range [0, @plotDim.x]
-            y: d3.scale[yType]().clamp(yes).range [@plotDim.y, 0]
+            x: d3.scale[@scaleType.x]().clamp(yes).range [0, @plotDim.x]
+            y: d3.scale[@scaleType.y]().clamp(yes).range [@plotDim.y, 0]
+        @setLimits() if alreadySet 
+        @refresh()
 
     setLimits: (limits={x: null, y: null}) ->
-        @limits =
-            x: limits.x ? d3.extent @data.x
-            y: limits.y ? d3.extent @data.y
-        @scale.x.domain limits.x
-        @scale.y.domain limits.y
+        @limits = mergeObj @limits, limits
+        @scale.x.domain @limits.x if @limits.x?
+        @scale.y.domain @limits.y if @limits.y?
+        @refresh()
 
     setAccessor: (accessor={x: null, y: null}) ->
-        @accessor = {x: accessor.x ? @accessor.x, y: accessor.y ? @accessor.y}
+        @accessor = mergeObj @accessor, accessor
+        @refresh() if @drawn
+
+    setLabel: (label={x: null, y: null, title: null}) ->
+        @label = mergeObj @label, label
+        if @prepared
+            @select(".title.axis-label").text @label.title
+            @select(".x.axis-label").text @label.x
+            @select(".y.axis-label").text @label.y
+
+    setTicks: (format={x: null, y: null}) ->
+        @ticks = mergeObj @ticks, format
+        @refresh()
+
+    setDefined: (@defined=null) ->
+        @refresh
 
     makeAxis: ->
-        x: d3.svg.axis().scale(@scale.x).orient("bottom")
-        y: d3.svg.axis().scale(@scale.y).orient("left")
+        make = (orient, type, ticks) ->
+            axis = d3.svg.axis().scale(type).orient(orient)
+            axis.ticks(ticks...) if ticks?
+            axis
+        x: make "bottom", @scale.x, @ticks.x
+        y: make "left", @scale.y, @ticks.y
 
     makeLine: ->
         @line = d3.svg.line()
-        @line.x(@accessor.x) if @accessor.x?
-        @line.y(@accessor.y) if @accessor.y?
+
+        {x: mapX, y: mapY} = @scale
+        {x: accessX, y: accessY} = @accessor
+        @line.x((d) -> mapX accessX d)
+        @line.y((d) -> mapY accessY d)
+
+        @line.defined @defined if @defined?
 
     makeCanvas: ->
-        svg = d3.select(@domRoot).append("svg")
-        describe svg,
-            width: @dim.x
-            height: @dim.y
-        @canvas = describe svg.append("g"),
-            transform: "translate({@margin.left}, {@margin.top})"
+        @canvas = describe @root.append("g"),
+            transform: "translate(#{@margin.left}, #{@margin.top})"
 
     prepare: ->
         return if @prepared
 
         @makeCanvas()
         @makeLine()
-        @drawAxis()
         @drawGrid()
-
+        @drawAxis()
+        @drawLabels()
+        
         @prepared = true
 
     drawAxis: ->
         axis = @makeAxis()
-        (describe @canvas.append("g")
+        (describe @canvas.append("g"),
             class: "x axis"
-            transform: "translate(0, #{dim.y})"
+            transform: "translate(0, #{@plotDim.y})"
         ).call(axis.x)
-        (describe @canvas.append("g")
+        (describe @canvas.append("g"),
             class: "y axis"
         ).call(axis.y)
 
@@ -81,92 +123,106 @@ class Plot
         return unless @showGrid
 
         axis = @makeAxis()
-        axis.x.tickSize(-@dim.y, 0, 0).tickFormat("")
-        axis.y.tickSize(-@dim.x, 0, 0).tickFormat("")
+        axis.x.tickSize(-@plotDim.y, 0, 0).tickFormat("")
+        axis.y.tickSize(-@plotDim.x, 0, 0).tickFormat("")
         
-        (describe @canvas.append("g")
+        (describe @canvas.append("g"),
             class: "x grid"
-            transform: "translate(0, #{@dim.y})"
+            transform: "translate(0, #{@plotDim.y})"
         ).call(axis.x)
-        (describe @canvas.append("g")
+        (describe @canvas.append("g"),
             class: "y grid"
-            transform: "translate(0, #{@dim.y})"
         ).call(axis.y)
 
-    draw: (data) ->
-        @data = data 
+    drawLabels: ->
+        describe @canvas.append("text").text(@label.title),
+            x: @plotDim.x/2
+            y: -@margin.top + 10
+            "text-anchor": "middle"
+            class: "title axis-label"
+
+        describe @canvas.append("text").text(@label.x),
+            x: @plotDim.x/2
+            y: @plotDim.y + @margin.bottom - 5
+            "text-anchor": "middle"
+            class: "x axis-label"
+
+        rotated = @canvas.append("g").attr "transform", "rotate(-90)"
+        describe rotated.append("text").text(@label.y),
+            x: -@plotDim.y/2
+            y: 10-@margin.left
+            "text-anchor": "middle"
+            class: "y axis-label"
+
+    draw: (@data) ->
         @prepare()
 
-        @path = describe @canvas.append("path")
-            class: "line"
-            d: @line d
+        pathData = @line @data
+        if @drawn
+            @select("path.line")
+                .transition()
+                .duration(500)
+                .attr("d", pathData)
+        else
+            describe @canvas.append("path"),
+                class: "line"
+                d: pathData
+        @drawn = true
 
+    refresh: ->
+        return unless @prepared
 
-margin = {top: 20, right: 20, bottom: 30, left: 50}
-width = 900 - margin.left - margin.right
-height = 600 - margin.top - margin.bottom
+        @canvas.remove()
+        @prepared = false
+        @drawn = false
+        @prepare()
+        @draw @data if @drawn
 
-x = d3.scale.log().range [0, width]
-y = d3.scale.log().clamp(yes).range [height, 0]
+plot = new Plot("#plot1")
+plot.logLog()
+plot.setLabel
+    x: "Frequency [Hz]"
+    y: "Strain Amplitude [Hz^{-1/2}]"
+    title: "Amplitude Spectral Density"
+plot.setTicks
+    x: [10, d3.format "n"]
+    y: [10]
+plot.setLimits
+    x: [1, 1e4]
+    y: [1e-25, 1e-16]
+plot.setDefined (d) ->
+    d[0] != 0 and not isNaN d[1]
 
+update = ->
+    d3.json "asd/data", (error, json) ->
+        if error?
+            console.log error
+            setTimeout update, 10*1000
+            return
 
-xAxis = -> d3.svg.axis().scale(x).orient("bottom")
-yAxis = -> d3.svg.axis().scale(y).orient("left")
+        {time, frequency, amplitude} = json
+        data = ([+frequency[i], +amplitude[i]]\
+                for i in [0..frequency.length])
+        plot.setLabel
+            title: "Time = #{time}"
+        plot.draw data
 
-line = d3.svg.line()
-       .x((d) -> x d.date)
-       .y((d) -> y d.close)
+        setTimeout update, 10*1000
+update()
 
-svg = d3.select("body").append("svg")
-    .attr("width", width + margin.left + margin.right)
-    .attr("height", height + margin.top + margin.bottom)
-  .append("g")
-    .attr("transform", "translate(" + margin.left + "," + margin.top + ")")
+# d3.json "asd/data", (error, json) ->
+#     {time, frequency, amplitude} = json
+#     data = ({freq: +frequency[i], ampl: +amplitude[i]}\
+#             for i in [0..frequency.length])
 
-d3.json "asd/data", (error, json) ->
-  {time, frequency, amplitude} = json
+#     plot.setLimits 
+#         x: [1, d3.max frequency]
+#         y: [1e-24, d3.max amplitude]
 
-  clean = (x) -> if isNaN(+x) then 0.0 else +x
-  data = ({freq: clean(frequency[i]), ampl: clean(amplitude[i])}\
-          for i in [0..frequency.length])
+#     plot.setAccessor
+#         x: (d) -> d.freq
+#         y: (d) -> d.ampl
 
-  x.domain [1, d3.max(frequency)] # avoid a 0 here
-  y.domain [1e-24, d3.max(amplitude)]
+#     plot.defined = (d) -> d.freq != 0 and not isNaN d.ampl
 
-  svg.append("g")
-      .attr("class", "x axis")
-      .attr("transform", "translate(0," + height + ")")
-      .call(xAxis())
-  svg.append("g")
-      .attr("class", "grid")
-      .attr("transform", "translate(0," + height + ")")
-      .call(xAxis().tickSize(-height, 0, 0).tickFormat(""))
-  svg.append("text")
-      .attr("transform", "translate(#{width/2}, #{height + margin.bottom})")
-      .attr("text-anchor", "middle")
-      .attr("class", "x axis-label")
-      .text("Frequency [Hz]")
-
-  svg.append("g")
-      .attr("class", "y axis")
-      .call(yAxis())
-  svg.append("g")
-      .attr("transform", "rotate(-90)")
-    .append("text")
-      .attr("x", -height/2)
-      .attr("y", 10-margin.left)
-      .attr("text-anchor", "middle")
-      .attr("class", "y axis-label")
-      .text("Amplitude [Hz^-1/2]")
-  svg.append("g")
-      .attr("class", "grid")
-      .call(yAxis().tickSize(-width, 0, 0).tickFormat(""))
-
-  line = d3.svg.line()\
-         .x((d) -> x d.freq)
-         .y((d) -> y d.ampl)
-         .defined((d) -> d.freq != 0 and !isNaN(d.ampl))
-  
-  svg.append("path")
-      .attr("class", "line")
-      .attr("d", line data)
+#     plot.draw data
