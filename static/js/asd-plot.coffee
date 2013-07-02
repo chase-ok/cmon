@@ -12,6 +12,12 @@ mergeObj = (base, newObj) ->
         base[key] = value if value?
     base
 
+isEmpty = (obj) ->
+    for prop, value of obj
+        if obj.hasOwnProperty prop
+            return no
+    return yes
+
 class Plot
     constructor: (@rootSelector="body") ->
         @root = d3.select @rootSelector
@@ -28,13 +34,13 @@ class Plot
         @setAccessor
             x: (d) -> d[0]
             y: (d) -> d[1]
-        @setLabel
+        @setAxisLabel
             x: "x"
             y: "y"
             title: ""
 
         @prepared = false
-        @drawn = false
+        @drawn = {}
         @showGrid = true
 
     select: (selector) -> d3.select("#{@rootSelector} #{selector}")
@@ -60,9 +66,9 @@ class Plot
 
     setAccessor: (accessor={x: null, y: null}) ->
         @accessor = mergeObj @accessor, accessor
-        @refresh() if @drawn
+        @refresh() unless isEmpty @drawn
 
-    setLabel: (label={x: null, y: null, title: null}) ->
+    setAxisLabel: (label={x: null, y: null, title: null}) ->
         @label = mergeObj @label, label
         if @prepared
             @select(".title.axis-label").text @label.title
@@ -105,7 +111,7 @@ class Plot
         @makeLine()
         @drawGrid()
         @drawAxis()
-        @drawLabels()
+        @drawAxisLabels()
         
         @prepared = true
 
@@ -134,7 +140,7 @@ class Plot
             class: "y grid"
         ).call(axis.y)
 
-    drawLabels: ->
+    drawAxisLabels: ->
         describe @canvas.append("text").text(@label.title),
             x: @plotDim.x/2
             y: -@margin.top + 10
@@ -154,20 +160,23 @@ class Plot
             "text-anchor": "middle"
             class: "y axis-label"
 
-    draw: (@data) ->
+    draw: (id, data, label=null) ->
         @prepare()
+        pathData = @line data
 
-        pathData = @line @data
-        if @drawn
-            @select("path.line")
+        if @drawn[id]
+            @select("path.line##{id}")
                 .transition()
                 .duration(500)
                 .attr("d", pathData)
         else
             describe @canvas.append("path"),
+                id: id
                 class: "line"
                 d: pathData
-        @drawn = true
+
+        @drawn[id] = { data, label }
+
 
     refresh: ->
         return unless @prepared
@@ -178,51 +187,89 @@ class Plot
         @prepare()
         @draw @data if @drawn
 
-plot = new Plot("#plot1")
-plot.logLog()
-plot.setLabel
+dualPlot = new Plot("#dualPlot")
+dualPlot.logLog()
+dualPlot.setAxisLabel
     x: "Frequency [Hz]"
     y: "Strain Amplitude [Hz^{-1/2}]"
     title: "Amplitude Spectral Density"
-plot.setTicks
+dualPlot.setTicks
     x: [10, d3.format "n"]
     y: [10]
-plot.setLimits
+dualPlot.setLimits
     x: [1, 1e4]
     y: [1e-25, 1e-16]
-plot.setDefined (d) ->
+dualPlot.setDefined (d) ->
     d[0] != 0 and not isNaN d[1]
 
-update = ->
-    d3.json "asd/data", (error, json) ->
-        if error?
-            console.log error
-            setTimeout update, 10*1000
+ratioPlot = new Plot("#ratioPlot")
+ratioPlot.semilogX()
+ratioPlot.setAxisLabel
+    x: "Frequency [Hz]"
+    y: "Current/Average"
+    title: "Ratio"
+ratioPlot.setTicks
+    x: [10, d3.format "n"]
+    #y: [10]
+ratioPlot.setLimits
+    x: [1, 1e4]
+    y: [0.8, 1.2]
+ratioPlot.setDefined (d) ->
+    d[0] != 0 and not isNaN d[1]
+
+
+refreshTime = 500
+
+updateLatestFrame = ->
+    d3.json "asd/frames/latest", (error, json) ->
+        if error? or not json.success
+            console.log error if error?
+            console.log json.error if json?
+            setTimeout updateLatestFrame, refreshTime
             return
 
-        {time, frequency, amplitude} = json
-        data = ([+frequency[i], +amplitude[i]]\
-                for i in [0..frequency.length])
-        plot.setLabel
+        {time, frequencies, amplitudes} = json.data
+        data = ([+frequencies[i], +amplitudes[i]]\
+                for i in [0..frequencies.length])
+        dualPlot.setAxisLabel
             title: "Time = #{time}"
-        plot.draw data
+        dualPlot.draw "amplitude", data
 
-        setTimeout update, 10*1000
-update()
+        #if averageAmplitudes?
+        #    ratioData = ([frequencies[i],
+        #                  amplitudes[i]/averageAmplitudes[i]]\
+        #                 for i in [0..frequencies.length])
+        #    ratioPlot.draw "ratio", ratioData
 
-# d3.json "asd/data", (error, json) ->
-#     {time, frequency, amplitude} = json
-#     data = ({freq: +frequency[i], ampl: +amplitude[i]}\
-#             for i in [0..frequency.length])
+        setTimeout updateLatestFrame, refreshTime
+updateLatestFrame()
 
-#     plot.setLimits 
-#         x: [1, d3.max frequency]
-#         y: [1e-24, d3.max amplitude]
+averageAmplitudes = null
+d3.json "asd/averages/0.01", (error, json) ->
+    if error? or not json.success
+        console.log error
+        return
 
-#     plot.setAccessor
-#         x: (d) -> d.freq
-#         y: (d) -> d.ampl
+    {frequencies, amplitudes} = json.data
+    data = ([+frequencies[i], +amplitudes[i]]\
+            for i in [0..frequencies.length])
+    dualPlot.draw "average", data
 
-#     plot.defined = (d) -> d.freq != 0 and not isNaN d.ampl
+    averageAmplitudes = amplitudes
 
-#     plot.draw data
+updateShortAverage = ->
+    d3.json "asd/averages/0.01", (error, json) ->
+        if error? or not json.success
+            console.log error
+            setTimeout updateShortAverage, refreshTime
+            return
+
+        {frequencies, amplitudes} = json.data
+        if averageAmplitudes?
+            ratioData = ([frequencies[i],
+                          amplitudes[i]/averageAmplitudes[i]]\
+                         for i in [0..frequencies.length])
+            ratioPlot.draw "ratio", ratioData
+
+        setTimeout updateShortAverage, refreshTime
+updateShortAverage()
