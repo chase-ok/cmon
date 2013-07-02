@@ -1,7 +1,5 @@
 
 import time
-import peewee as pw
-import numpy as np
 
 HOME = "/home/chase.kernan"
 DATA = "{0}/data/cmon".format(HOME)
