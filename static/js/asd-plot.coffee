@@ -203,17 +203,17 @@ dualPlot.setDefined (d) ->
     d[0] != 0 and not isNaN d[1]
 
 ratioPlot = new Plot("#ratioPlot")
-ratioPlot.semilogX()
+ratioPlot.logLog()
 ratioPlot.setAxisLabel
     x: "Frequency [Hz]"
     y: "Current/Average"
     title: "Ratio"
 ratioPlot.setTicks
     x: [10, d3.format "n"]
-    #y: [10]
+    y: [10]
 ratioPlot.setLimits
     x: [1, 1e4]
-    y: [0.8, 1.2]
+    y: [0.5, 5]
 ratioPlot.setDefined (d) ->
     d[0] != 0 and not isNaN d[1]
 
@@ -245,7 +245,7 @@ updateLatestFrame = ->
 updateLatestFrame()
 
 averageAmplitudes = null
-d3.json "asd/averages/0.01", (error, json) ->
+d3.json "asd/averages/0.0001", (error, json) ->
     if error? or not json.success
         console.log error
         return
@@ -258,7 +258,7 @@ d3.json "asd/averages/0.01", (error, json) ->
     averageAmplitudes = amplitudes
 
 updateShortAverage = ->
-    d3.json "asd/averages/0.01", (error, json) ->
+    d3.json "asd/averages/0.1", (error, json) ->
         if error? or not json.success
             console.log error
             setTimeout updateShortAverage, refreshTime
