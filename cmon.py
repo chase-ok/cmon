@@ -6,7 +6,7 @@ from bottle import route, run, request, static_file, view
 STATIC_ROOT = '/home/chase.kernan/public_html/cgi-bin/cmon/static'
 bottle.TEMPLATE_PATH.append(STATIC_ROOT + "/views/")
 
-from web import asd
+from web import asd, rayleigh
 
 @route('/static/<filepath:path>')
 def server_static(filepath): 

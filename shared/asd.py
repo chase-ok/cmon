@@ -2,7 +2,8 @@
 from shared import dbutils
 import peewee as pw
 
-database = pw.SqliteDatabase(dbutils.make_db_path("asd.db"))
+database = pw.SqliteDatabase(dbutils.make_db_path("asd.db"),
+                             timeout=10)
 
 class Frame(pw.Model):
     time = pw.FloatField()
@@ -34,3 +35,7 @@ def reset_frames():
 
 def reset_averages():
     dbutils.reset_table(MovingAverage)
+
+if __name__ == "__main__":
+    reset_frames()
+    reset_averages()

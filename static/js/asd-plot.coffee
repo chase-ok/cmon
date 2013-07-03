@@ -185,7 +185,9 @@ class Plot
         @prepared = false
         @drawn = false
         @prepare()
-        @draw @data if @drawn
+        
+        for id, value of @drawn
+            draw id, value.data, value.label
 
 dualPlot = new Plot("#dualPlot")
 dualPlot.logLog()
@@ -230,7 +232,7 @@ updateLatestFrame = ->
 
         {time, frequencies, amplitudes} = json.data
         data = ([+frequencies[i], +amplitudes[i]]\
-                for i in [0..frequencies.length])
+                for i in [0...frequencies.length])
         dualPlot.setAxisLabel
             title: "Time = #{time}"
         dualPlot.draw "amplitude", data
@@ -245,14 +247,14 @@ updateLatestFrame = ->
 updateLatestFrame()
 
 averageAmplitudes = null
-d3.json "asd/averages/0.0001", (error, json) ->
+d3.json "asd/averages/0.01", (error, json) ->
     if error? or not json.success
         console.log error
         return
 
     {frequencies, amplitudes} = json.data
     data = ([+frequencies[i], +amplitudes[i]]\
-            for i in [0..frequencies.length])
+            for i in [0...frequencies.length])
     dualPlot.draw "average", data
 
     averageAmplitudes = amplitudes
@@ -268,7 +270,7 @@ updateShortAverage = ->
         if averageAmplitudes?
             ratioData = ([frequencies[i],
                           amplitudes[i]/averageAmplitudes[i]]\
-                         for i in [0..frequencies.length])
+                         for i in [0...frequencies.length])
             ratioPlot.draw "ratio", ratioData
 
         setTimeout updateShortAverage, refreshTime
