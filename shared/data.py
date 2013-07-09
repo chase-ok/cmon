@@ -5,47 +5,55 @@ import numpy as np
 from lockfile.linklockfile import LinkLockFile
 from os.path import join
 from functools import wraps
+import time
 
 DATA_DIR = "/home/chase.kernan/data/cmon"
-LOCK_TIMEOUT = 15
-
+LOCK_TIMEOUT = 10
+LOCK_POLL = 0.01
 
 def make_data_path(name):
     return join(DATA_DIR, name)
 
 
-class open_h5:
+class write_h5:
 
-    def __init__(self, name, *args, **kwargs):
+    def __init__(self, name):
         self.name = name
-        self.args = args
-        self.kwargs = kwargs
 
     def __enter__(self):
         path = make_data_path(self.name)
         self.lock = LinkLockFile(path)
         self.lock.acquire(timeout=LOCK_TIMEOUT)
 
-        self.file = h5py.File(path, *self.args, **self.kwargs)
+        self.file = h5py.File(path, mode="a")
+        self.file.attrs["_writing"] = True
         return self.file
 
     def __exit__(self, type, value, traceback):
-        self.lock.release()
+        self.file.attrs["_writing"] = False
+        self.file.flush()
         self.file.close()
+        self.lock.release()
 
 
-class use_h5:
+class read_h5:
 
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+    def __init__(self, name):
+        self.name = name
 
-    def __call__(self, f):
-        @wraps
-        def wrapper(*f_args, **f_kwargs):
-            with open_h5(*self.args, **self.kwargs) as h5:
-                return f(h5, *f_args, **f_kwargs)
-        return wrapper
+    def __enter__(self):
+        self.file = h5py.File(make_data_path(self.name), mode="r")
+
+        start_time = time.time()
+        while self.file.attrs["_writing"]:
+            time.sleep(LOCK_POLL)
+            if time.time() > start_time + LOCK_TIMEOUT:
+                raise ValueError("Lock timeout")
+
+        return self.file
+
+    def __exit__(self, type, value, traceback):
+        self.file.close()
 
 
 def open_channel(h5, channel, create_if_nonexistent=True):
@@ -81,7 +89,46 @@ class SpectralTable(object):
 
         @property
         @memoized
+        def frequencies(self):
+            name = "{0}_frequencies".format(self.meta.name)
+            def create():
+                data = self.meta.calculate_frequencies()
+                return self.group.create_dataset(name=name, data=data)
+            return self._require_array(name, create)
+
+        @property
         def times(self):
+            return self._times[:self._last_index+1]
+
+        @property
+        def values(self):
+            return self._values[:self._last_index+1, ...]
+
+        def append(self, time, values):
+            index = self._get_next_index()
+            self._times[index] = time
+            self._values[index, :] = values
+
+        def latest(self):
+            index = self._last_index
+            if index < 0:
+                raise ValueError("No values written yet!")
+            return self._times[index], self._values[index, :]
+
+        def get(self, time):
+            index = float_find_index(self.times, time)
+            return self.times[index], self.values[index, :]
+
+        def __iter__(self):
+            for i in range(self._last_index):
+                yield self.times[i], self.values[i, :]
+
+        def __len__(self):
+            return self._last_index+1
+
+        @property
+        @memoized
+        def _times(self):
             name = "{0}_times".format(self.meta.name)
             def create():
                 return self.group.create_dataset(name=name,
@@ -93,16 +140,7 @@ class SpectralTable(object):
 
         @property
         @memoized
-        def frequencies(self):
-            name = "{0}_frequencies".format(self.meta.name)
-            def create():
-                data = self.meta.calculate_frequencies()
-                return self.group.create_dataset(name=name, data=data)
-            return self._require_array(name, create)
-
-        @property
-        @memoized
-        def values(self):
+        def _values(self):
             def create():
                 length = self.frequencies.len()
                 dataset = self.group.require_dataset(name=self.meta.name,
@@ -123,43 +161,20 @@ class SpectralTable(object):
                 return dataset
             return self._require_array(self.meta.name, create)
 
-        def append(self, time, values):
-            index = self._get_next_index()
-            self.times[index] = time
-            self.values[index, :] = values
-
-        @property
-        def latest(self):
-            index = self._last_index
-            if index < 0:
-                raise ValueError("No values written yet!")
-            return self.times[index], self.values[index, :]
-
-        def get(self, time):
-            index = float_find_index(self.times[...], time)
-            return self.times[index], self.values[index, :]
-
-        def __iter__(self):
-            for i in range(self._last_index):
-                yield self.times[i], self.values[i, :]
-
-        def __len__(self):
-            return self._last_index
-
         @property
         def _last_index(self):
-            return self.values.attrs["last_index"]
+            return self._values.attrs["last_index"]
 
         @_last_index.setter
         def _last_index(self, value):
-            self.values.attrs["last_index"] = value
+            self._values.attrs["last_index"] = value
 
         def _get_next_index(self):
             index = self._last_index + 1
-            if index >= self.values.len():
+            if index >= self._values.len():
                 size = index*2 if index > 0 else 10
-                self.values.resize(size, axis=0)
-                self.times.resize((size,))
+                self._values.resize(size, axis=0)
+                self._times.resize((size,))
             self._last_index = index
             return index
 

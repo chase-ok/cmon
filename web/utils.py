@@ -1,18 +1,24 @@
 
 import bottle
+import numpy as np
 from functools import wraps
+
 
 class QueryError(Exception):
     def __init__(self, reason):
         self.reason = reason
+
     def __str__(self):
         return "QueryError: {0}".format(self.reason)
 
+
 def fail(error):
-    return { 'success': False, 'error': error }
+    return {'success': False, 'error': error}
+
 
 def succeed(data):
-    return { 'success': True, 'data': data }
+    return {'success': True, 'data': data}
+
 
 def succeed_or_fail(func):
     @wraps(func)
@@ -24,39 +30,30 @@ def succeed_or_fail(func):
         return succeed(data)
     return wrapper
 
-def return_model(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs).as_dict()
-    wrapper.raw = func
-    return wrapper
 
-def add_ordering(query, field, default="desc"):
+def add_ordering(values, default=None):
     order = bottle.request.query.order or default
 
-    try:
-        order_func = getattr(field, order)
-    except AttributeError:
+    if order is None or order.tolower() == "none":
+        return values
+    elif order.tolower() == "asc":
+        return np.sort(values)
+    elif order.tolower() == "desc":
+        return np.sort(values)[::-1]
+    else:
         raise QueryError('No such ordering: {0}'.format(order))
 
-    return query.order_by(order_func())
 
-def add_limit(query, default=None):
+def add_limit(values, default=None):
     limit = bottle.request.query.limit or default
-    if limit is None: return query
+    if limit is None:
+        return values
 
     try:
         limit = int(limit)
-        if limit <= 0: 
+        if limit <= 0:
             raise QueryError('limit must be positive: {0}'.format(limit))
     except ValueError as e:
         raise QueryError(str(e))
 
-    return query.limit(limit)
-
-def get_one(query):
-    results = list(query.limit(1))
-    if results:
-        return results[0]
-    else:
-        raise QueryError('No such row: {0}'.format(query))
+    return values[:limit]
