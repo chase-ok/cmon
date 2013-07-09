@@ -1,41 +1,8 @@
 
-from shared import dbutils
-import peewee as pw
+from shared import data, channels
 
-database = pw.SqliteDatabase(dbutils.make_db_path("asd.db"),
-                             timeout=10)
+H5_FILE = "asd.h5"
+open_h5 = lambda mode=None: data.open_h5(H5_FILE, mode=mode)
+use_h5 = data.use_h5(H5_FILE)
 
-class Frame(pw.Model):
-    time = pw.FloatField()
-    duration = pw.FloatField()
-    frequencies = dbutils.NumpyField()
-    amplitudes = dbutils.NumpyField()
-
-    class Meta:
-        database = database
-
-    def as_dict(self):
-        return { 'time': self.time,
-                 'duration': self.duration,
-                 'frequencies': self.frequencies.tolist(),
-                 'amplitudes': self.amplitudes.tolist() }
-
-class MovingAverage(pw.Model):
-    alpha = pw.FloatField()
-    frequencies = dbutils.NumpyField()
-    amplitudes = dbutils.NumpyField()
-
-    def as_dict(self):
-        return { 'alpha': self.alpha,
-                 'frequencies': self.frequencies.tolist(),
-                 'amplitudes': self.amplitudes.tolist() }
-
-def reset_frames():
-    dbutils.reset_table(Frame)
-
-def reset_averages():
-    dbutils.reset_table(MovingAverage)
-
-if __name__ == "__main__":
-    reset_frames()
-    reset_averages()
+strain_asd = data.SpectralTable("asd", channels.strain)

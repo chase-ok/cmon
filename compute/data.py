@@ -1,8 +1,7 @@
 
-import os
-import time
-from pylal import frutils
-from glue.gpstime import GpsSecondsFromPyUTC
+from shared import channels
+from pylal import frutils, seriesutils
+from lal import LIGOTimeGPS
 
 STRAIN_FRAMETYPE = "H1_LDAS_C02_L2"
 STRAIN_CHANNEL = "H1:LDAS-STRAIN"
@@ -17,9 +16,9 @@ def get_cache(frametype):
         _caches[frametype] = cache
         return cache
 
-def utc_to_gps_time(utc):
-    return GpsSecondsFromPyUTC(utc)
-
-OFFSET = 94346325
-def now_as_gps_time(offset=OFFSET):
-    return utc_to_gps_time(time.time()) - OFFSET
+def read_series(channel, time, duration):
+    name = channels.full_name(channel)
+    data = get_cache(channel.type).fetch(name, time, time + duration)
+    return seriesutils.fromarray(data, 
+                                 epoch=LIGOTimeGPS(time), 
+                                 deltaT=data.metadata.dt)

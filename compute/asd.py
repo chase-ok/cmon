@@ -1,23 +1,30 @@
 
-from compute.data import get_cache, now_as_gps_time, STRAIN_FRAMETYPE, STRAIN_CHANNEL
-from shared.asd import Frame, MovingAverage
+from compute.data import read_series
+from shared.utils import now_as_gps_time
+from shared.asd import open_h5
+from pylal.seriesutils import compute_average_spectrum
 import numpy as np
-from matplotlib import mlab
 
-def compute_frame(time, duration):
-    data = get_cache(STRAIN_FRAMETYPE)\
-           .fetch(STRAIN_CHANNEL, time, time + duration)
 
-    rate = 1.0/data.metadata.dt
-    block_length = 0.5
-    power, freq = mlab.psd(data, Fs=rate, NFFT=int(rate*block_length),
-                           sides="onesided")
-    ampl = np.sqrt(power)
+def compute_asd(table, time, duration):
+    series = read_series(table.channel, time, duration)
+    spectrum = compute_average_spectrum(series, table.seglen, table.stride,
+                                        average="median")
 
-    return Frame(time=time, 
-                 duration=duration, 
-                 frequencies=freq, 
-                 amplitudes=ampl)
+    amplitudes = np.sqrt(spectrum.data.data)
+    with open_h5(mode="w") as h5:
+        table.attach(h5).append(time, amplitudes)
+    return amplitudes
+
+
+def test():
+    import shared.asd
+    compute_asd(shared.asd.strain_asd, now_as_gps_time(), 100)
+    with open_h5("r") as h5:
+        table = shared.asd.strain_asd.attach(h5)
+        time, amplitudes = table.latest
+        print time, table.frequencies[...], amplitudes
+
 
 def update_moving_averages(frame):
     for average in MovingAverage.select():
@@ -26,23 +33,28 @@ def update_moving_averages(frame):
                              (1-average.alpha)*average.amplitudes
         average.save()
 
+
 DAEMON_DURATION = 5
 DAEMON_REFRESH = 1.0
+
 
 def setup_averages(alphas=[0.0001, 0.001, 0.01, 0.1]):
     frame = compute_frame(now_as_gps_time() - DAEMON_OFFSET, DAEMON_DURATION)
     for alpha in alphas:
-        MovingAverage(alpha=alpha, 
-                      frequencies=frame.frequencies, 
+        MovingAverage(alpha=alpha,
+                      frequencies=frame.frequencies,
                       amplitudes=frame.amplitudes).save()
+
 
 def daemon():
     frame = compute_frame(now_as_gps_time(), DAEMON_DURATION)
     frame.save()
     update_moving_averages(frame)
 
+
 if __name__ == "__main__":
-    import time
-    while True:
-        daemon()
-        time.sleep(DAEMON_REFRESH)
+    test()
+    #import time
+    #while True:
+    #    daemon()
+    #    time.sleep(DAEMON_REFRESH)
