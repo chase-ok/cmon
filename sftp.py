@@ -8,13 +8,15 @@ import logging
 DIRECTORY = "."
 UPLOAD_SCRIPT = "upload"
 LOG_FILE = "./sftp.log"
-GRID_URL = "ldas-grid.ligo.caltech.edu"
+GRID_URL = "ldas-pcdev1.ligo-wa.caltech.edu"
 UPLOAD_DIRECTORY = "/home/chase.kernan/public_html/cgi-bin/cmon"
 
 _mod_times = dict()
+open(UPLOAD_SCRIPT, "w").close()
 
 def daemon():
-    _to_upload = []
+    files_to_upload = []
+    dirs_to_upload = []
 
     for root, dirs, files in os.walk(DIRECTORY):
         for name in files:
@@ -25,14 +27,20 @@ def daemon():
             mod_time = get_mod_time(path)
             try:
                 if mod_time > _mod_times[path]:
-                    _to_upload.append(path)
+                    files_to_upload.append(path)
             except KeyError:
-                _to_upload.append(path)
+                files_to_upload.append(path)
             _mod_times[path] = mod_time
 
-    logging.debug(str(_to_upload))
+        for dir in dirs:
+            path = join(root, dir)[2:]
+            dirs_to_upload.append(path)
+
+    logging.debug(str(files_to_upload))
     with open(UPLOAD_SCRIPT, "w") as f:
-        for path in _to_upload:
+        #for dir in dirs_to_upload:
+        #    f.write("mkdir {0}\n".format(dir))
+        for path in files_to_upload:
             f.write("put {0} {0}\n".format(path))
 
     with open(os.devnull, "w") as null:
@@ -41,8 +49,6 @@ def daemon():
                         shell=True,
                         stdout=null)
 
-def upload(path):
-    subprocess.call()
 
 def get_mod_time(path):
     return os.stat(path).st_mtime

@@ -9,7 +9,6 @@ def compute_asd(table, time, duration):
     series = read_series(table.channel, time, duration)
     spectrum = compute_average_spectrum(series, table.seglen, table.stride,
                                         average="median")
-
     amplitudes = np.sqrt(spectrum.data.data)
     with write_h5() as h5:
         table.attach(h5).append(time, amplitudes)
@@ -23,4 +22,7 @@ def compute_latest_strain_asd(duration=5):
 
 
 if __name__ == "__main__":
-    compute_latest_strain_asd()
+    import time
+    while True:
+        compute_latest_strain_asd()
+        time.sleep(1.0)

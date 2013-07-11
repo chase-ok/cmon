@@ -2,18 +2,108 @@
 from shared.utils import memoized, float_find_index
 import h5py
 import numpy as np
-from lockfile.linklockfile import LinkLockFile
+from lockfile import LockBase, LockTimeout
+from lockfile.mkdirlockfile import MkdirLockFile
+from lockfile import LockTimeout
 from os.path import join
 from functools import wraps
 import time
+import os
 
 DATA_DIR = "/home/chase.kernan/data/cmon"
-LOCK_TIMEOUT = 10
+LOCK_DIR = "/home/cgi_output/chase.kernan/"
+LOCK_WRITE_TIMEOUT = 10.0
+LOCK_READ_TIMEOUT = 5.0
 LOCK_POLL = 0.01
 
-def make_data_path(name):
+class ReadersWriterLock(object):
+
+    def __init__(self, path, lock_class=MkdirLockFile):
+        self.path = path
+        self.waiting_lock = lock_class(path + "-waiting", threaded=False)
+        self.about_to_write_lock = lock_class(path + "-about_to_write", threaded=False)
+        self.write_lock = lock_class(path + "-write", threaded=False)
+        self.num_readers_lock = lock_class(path + "-num_readers", threaded=False)
+        self.read_lock = lock_class(path + "-read", threaded=False)
+        self.num_readers_file = path + "-num_readers.txt"
+
+    def acquire_write(self):
+        self.waiting_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
+
+        try:
+            self._wait_on(self.num_readers_lock, LOCK_WRITE_TIMEOUT)
+            self.read_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
+        except LockTimeout:
+            self.waiting_lock.release()
+            raise
+        try:
+            self.about_to_write_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
+        except LockTimeout:
+            self.read_lock.release()
+            self.waiting_lock.release()
+            raise
+        try:
+            self.write_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
+        except LockTimeout:
+            self.about_to_write_lock.release()
+            self.read_lock.release()
+            self.waiting_lock.release()
+            raise
+
+        self.about_to_write_lock.release()
+
+    def release_write(self):
+        self.write_lock.release()
+        self.read_lock.release()
+        self.waiting_lock.release()
+
+    def acquire_read(self):
+        self._wait_on(self.waiting_lock, LOCK_READ_TIMEOUT)
+
+        with self.num_readers_lock:
+            if not os.path.exists(self.num_readers_file):
+                self._create_num_readers()
+                num_readers = 1
+            else:
+                num_readers = self._get_num_readers() + 1
+            self._set_num_readers(num_readers)
+
+            if num_readers == 1:
+                self.read_lock.acquire()
+                os.chmod(self.read_lock.lock_file, 0o777)
+
+    def release_read(self):
+        should_release_read = False
+        with self.num_readers_lock:
+            num_readers = self._get_num_readers() - 1
+            self._set_num_readers(num_readers)
+            if num_readers == 0 and not self.about_to_write_lock.is_locked():
+                self.read_lock.break_lock()
+
+    def _get_num_readers(self):
+        with open(self.num_readers_file, "r") as f:
+            return int(f.read())
+
+    def _set_num_readers(self, num_readers):
+        with open(self.num_readers_file, "w") as f:
+            f.write(str(num_readers))
+
+    def _create_num_readers(self):
+        file = os.open(self.num_readers_file, os.O_WRONLY|os.O_CREAT, 0o777)
+        os.fdopen(file, 'w').close()
+
+    def _wait_on(self, lock, timeout):
+        end_time = time.time() + timeout
+        while lock.is_locked():
+            if time.time() > end_time:
+                raise LockTimeout
+            time.sleep(LOCK_POLL)
+
+def _make_data_path(name):
     return join(DATA_DIR, name)
 
+def _make_lock_path(name):
+    return join(LOCK_DIR, name)
 
 class write_h5:
 
@@ -21,20 +111,15 @@ class write_h5:
         self.name = name
 
     def __enter__(self):
-        path = make_data_path(self.name)
-        self.lock = LinkLockFile(path)
-        self.lock.acquire(timeout=LOCK_TIMEOUT)
-
-        self.file = h5py.File(path, mode="a")
-        self.file.attrs["_writing"] = True
-        return self.file
+        self.lock = ReadersWriterLock(_make_lock_path(self.name))
+        self.lock.acquire_write()
+        self.h5 = h5py.File(_make_data_path(self.name), mode="a")
+        return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.file.attrs["_writing"] = False
-        self.file.flush()
-        self.file.close()
-        self.lock.release()
-
+        self.h5.flush()
+        self.h5.close()
+        self.lock.release_write()
 
 class read_h5:
 
@@ -42,19 +127,19 @@ class read_h5:
         self.name = name
 
     def __enter__(self):
-        self.file = h5py.File(make_data_path(self.name), mode="r")
-
-        start_time = time.time()
-        while self.file.attrs["_writing"]:
-            time.sleep(LOCK_POLL)
-            if time.time() > start_time + LOCK_TIMEOUT:
-                raise ValueError("Lock timeout")
-
-        return self.file
+        self.lock = ReadersWriterLock(_make_lock_path(self.name))
+        self.lock.acquire_read()
+        self.h5 = h5py.File(_make_data_path(self.name), mode="r")
+        return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.file.close()
+        self.h5.close()
+        self.lock.release_read()
 
+class GenericTable(object):
+
+    def __init__(self, name, columns=[]):
+        pass
 
 def open_channel(h5, channel, create_if_nonexistent=True):
     if create_if_nonexistent:

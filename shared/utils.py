@@ -3,6 +3,8 @@ from bisect import bisect_left
 import collections
 import functools
 import time
+import os
+from lockfile import LockBase
 from glue.gpstime import GpsSecondsFromPyUTC
 
 
@@ -58,3 +60,15 @@ FAKE_TIME_MOD = 5*60*60
 def now_as_gps_time():
     #return utc_to_gps_time(time.time())
     return FAKE_TIME_START + time.time() % FAKE_TIME_MOD
+
+
+def get_directories(root):
+    for name in os.listdir(root):
+        if os.path.isdir(os.path.join(root, name)):
+            yield name
+
+def get_files(root):
+    for name in os.listdir(root):
+        if os.path.isfile(os.path.join(root, name)):
+            yield name
+

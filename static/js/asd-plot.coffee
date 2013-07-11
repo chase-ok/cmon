@@ -98,7 +98,9 @@ class Plot
         @line.x((d) -> mapX accessX d)
         @line.y((d) -> mapY accessY d)
 
-        @line.defined @defined if @defined?
+        if @defined?
+            defined = @defined
+            @line.defined (d) -> defined accessX(d), accessY(d)
 
     makeCanvas: ->
         @canvas = describe @root.append("g"),
@@ -163,8 +165,8 @@ class Plot
     draw: (id, data, label=null) ->
         @prepare()
         pathData = @line data
-
-        if @drawn[id]
+        
+        if @drawn[id]?
             @select("path.line##{id}")
                 .transition()
                 .duration(500)
@@ -201,77 +203,39 @@ dualPlot.setTicks
 dualPlot.setLimits
     x: [1, 1e4]
     y: [1e-25, 1e-16]
-dualPlot.setDefined (d) ->
-    d[0] != 0 and not isNaN d[1]
+dualPlot.setDefined (x, y) ->
+    x != 0 and not isNaN y
 
-ratioPlot = new Plot("#ratioPlot")
-ratioPlot.logLog()
-ratioPlot.setAxisLabel
-    x: "Frequency [Hz]"
-    y: "Current/Average"
-    title: "Ratio"
-ratioPlot.setTicks
-    x: [10, d3.format "n"]
-    y: [10]
-ratioPlot.setLimits
-    x: [1, 1e4]
-    y: [0.5, 5]
-ratioPlot.setDefined (d) ->
-    d[0] != 0 and not isNaN d[1]
+handleError = (error, json, func, args...) ->
+    console.log error if error?
+    console.log json.error if json?
+    setTimeout (() -> func(args...)), 500
 
+frequencies = null
 
-refreshTime = 500
-
-updateLatestFrame = ->
-    d3.json "asd/frames/latest", (error, json) ->
+loadFrequencies = () ->
+    d3.json "asd/frequencies", (error, json) ->
         if error? or not json.success
-            console.log error if error?
-            console.log json.error if json?
-            setTimeout updateLatestFrame, refreshTime
-            return
+            return handleError error, json, loadFrequencies
 
-        {time, frequencies, amplitudes} = json.data
-        data = ([+frequencies[i], +amplitudes[i]]\
+        {frequencies} = json.data
+        for i in [0...frequencies.length]
+            frequencies[i] = +frequencies[i]
+
+        refreshAmplitudes()
+
+refreshAmplitudes = () ->
+    d3.json "asd/latest", (error, json) ->
+        if error? or not json.success
+            return handleError error, json, refreshAmplitudes
+
+        {time, amplitudes} = json.data
+        data = ([frequencies[i], +amplitudes[i]]\
                 for i in [0...frequencies.length])
         dualPlot.setAxisLabel
             title: "Time = #{time}"
         dualPlot.draw "amplitude", data
 
-        #if averageAmplitudes?
-        #    ratioData = ([frequencies[i],
-        #                  amplitudes[i]/averageAmplitudes[i]]\
-        #                 for i in [0..frequencies.length])
-        #    ratioPlot.draw "ratio", ratioData
+        setTimeout refreshAmplitudes, 1000
 
-        setTimeout updateLatestFrame, refreshTime
-updateLatestFrame()
-
-averageAmplitudes = null
-d3.json "asd/averages/0.01", (error, json) ->
-    if error? or not json.success
-        console.log error
-        return
-
-    {frequencies, amplitudes} = json.data
-    data = ([+frequencies[i], +amplitudes[i]]\
-            for i in [0...frequencies.length])
-    dualPlot.draw "average", data
-
-    averageAmplitudes = amplitudes
-
-updateShortAverage = ->
-    d3.json "asd/averages/0.1", (error, json) ->
-        if error? or not json.success
-            console.log error
-            setTimeout updateShortAverage, refreshTime
-            return
-
-        {frequencies, amplitudes} = json.data
-        if averageAmplitudes?
-            ratioData = ([frequencies[i],
-                          amplitudes[i]/averageAmplitudes[i]]\
-                         for i in [0...frequencies.length])
-            ratioPlot.draw "ratio", ratioData
-
-        setTimeout updateShortAverage, refreshTime
-updateShortAverage()
+loadFrequencies()
