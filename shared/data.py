@@ -7,6 +7,7 @@ from lockfile.mkdirlockfile import MkdirLockFile
 from lockfile import LockTimeout
 from os.path import join
 from functools import wraps
+from collections import namedtuple
 import time
 import os
 
@@ -136,10 +137,160 @@ class read_h5:
         self.h5.close()
         self.lock.release_read()
 
+
+def open_group(h5, path):
+    parts = path.split("/")
+    for part in parts[:-1]:
+        h5 = h5.require_group(part)
+    return h5, parts[-1]
+
+
 class GenericTable(object):
 
-    def __init__(self, name, columns=[]):
-        pass
+    def __init__(self, path, dtype=[], chunk_size=10, compression='lzf'):
+        # dtype should be a list of ('name', type) tuples
+        self.path = path
+        self.dtype = dtype
+        self.row_class = namedtuple('TableRow', self.column_names)
+        self.chunk_size = chunk_size
+        self.compression = compression
+
+        self._h5 = None
+        self._impl = None
+
+    def attach(self, h5, reset=False):
+        if not reset and self._h5 == h5:
+            return self._impl
+        
+        group, name = open_group(h5, self.path)
+        if reset and name in group: 
+            del group[name]
+
+        if name in group:
+            dataset = group[name]
+        else:
+            dataset = group.require_dataset(name=name,
+                                            shape=(0,),
+                                            dtype=self.dtype,
+                                            chunks=(self.chunk_size,),
+                                            maxshape=(None,),
+                                            compression=self.compression,
+                                            fletcher32=True,
+                                            exact=False)
+
+        self._impl = self.Implementation(self, dataset)
+        self._h5 = h5
+        return self._impl
+
+    def make_row(self, **fields):
+        return self.row_class(*(fields[col] for col in self.column_names))
+
+    @property
+    @memoized
+    def column_names(self):
+        return [field[0] for field in self.dtype]
+
+    class Implementation(object):
+
+        def __init__(self, meta, dataset):
+            self._meta = meta
+            self._row_class = meta.row_class
+            self.dataset = dataset
+
+            try:
+                self._length
+            except KeyError:
+                self._length = 0
+
+        @property
+        def columns(self):
+            class Columns(object):
+                def __getattr__(inner, column):
+                    return self.dataset[column][:len(self)]
+            return Columns()
+
+        @property
+        def attrs(self):
+            return self.dataset.attrs
+
+        def read_dict(self, row_index):
+            return self.read_row(row_index)._asdict()
+
+        def read_row(self, row_index):
+            if row_index >= self._length:
+                raise IndexError
+            return self._row_class(*self.dataset[row_index])
+
+        def write_dict(self, row_index, **fields):
+            self.write_row(row_index, aself.make_row(**fields))
+
+        def write_row(self, row_index, row):
+            if row_index >= self._length:
+                raise IndexError
+            self.dataset[row_index] = row
+
+        def append_dict(self, **fields):
+            self.append_row(self.make_row(**fields))
+
+        def append_row(self, row):
+            index = self._get_next_index()
+            self.dataset[index] = row
+
+        def iterdict(self):
+            for i in range(len(self)):
+                yield self.read_dict(i)
+
+        def iterrows(self):
+            for i in range(len(self)):
+                yield self._row_class(*self.dataset[i])
+
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                return [self.read_row(i) for i in 
+                        xrange(*key.indices(len(self)))]
+            else:
+                return self.read_row(key)
+
+        def __setitem__(self, key, item):
+            if isinstance(key, slice):
+                indices = range(*key.indices(len(self)))
+                if np.iterable(item):
+                    if len(item) != len(indices):
+                        raise ValueError
+                    for i, row in zip(indices, item):
+                        self.write_row(i, row)
+                else:
+                    if indices[-1] >= self._length:
+                        raise IndexError
+                    self.dataset[indices] = item
+            else:
+                self.write_row(key, item)
+
+        def __iter__(self):
+            return self.iterrows()
+
+        def __len__(self):
+            return self._length
+
+        def __getattr__(self, name):
+            return getattr(self._meta, name)
+
+        @property
+        def _length(self):
+            return self.dataset.attrs["length"]
+
+        @_length.setter
+        def _length(self, value):
+            self.dataset.attrs["length"] = value
+
+        def _get_next_index(self):
+            index = self._length
+            if index >= self.dataset.len():
+                size = index*2 if index > 0 else 10
+                self.dataset.resize((size,))
+            self._length = index + 1
+            return index
+
 
 def open_channel(h5, channel, create_if_nonexistent=True):
     if create_if_nonexistent:

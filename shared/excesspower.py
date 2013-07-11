@@ -1,27 +1,27 @@
 
-from shared.utils import get_directories, get_files
-import os
-from os.path import join
-import re
-from ConfigParser import SafeConfigParser
+from shared import data
+from shared.utils import memoized
 
 IFO = "H1"
 EXCESS_POWER_ROOT = "/home/detchar/excesspower/ER3/{0}".format(IFO)
 
-_channel_re = re.compile('(?P<subsystem>[A-Z0-9]+)_(?P<channel>[_A-Z0-9]+)_excesspower\\Z')
-_time_re = re.compile('(?P<ifo>[A-Z0-9]+)-(?P<subsystem>[A-Z0-9]+)_(?P<channel>[_A-Z0-9]+)_excesspower-(?P<time>[0-9]+)-(?P<duration>[0-9]+)\\.xml\\Z')
+H5_FILE = "excesspower.h5"
+write_h5 = lambda: data.write_h5(H5_FILE)
+read_h5 = lambda: data.read_h5(H5_FILE)
 
-def read_channels(root=EXCESS_POWER_ROOT):
-    channels = []
-    for directory in get_directories(root):
-        match = _channel_re.match(directory)
-        if not match: continue
+MAX_CHANNEL_NAME_LENGTH = 64
+MAX_SUBSYSTEM_NAME_LENGTH = 8
+MAX_DIRECTORY_LENGTH = 256 + MAX_CHANNEL_NAME_LENGTH + MAX_SUBSYSTEM_NAME_LENGTH
 
-        channels.append(Channel(subsystem=match.group('subsystem'),
-                                name=match.group('channel'),
-                                directory=join(root, directory)))
+channels_table = data.GenericTable('channels', 
+        dtype=[('subsystem', str, MAX_SUBSYSTEM_NAME_LENGTH),
+               ('name', str, MAX_CHANNEL_NAME_LENGTH),
+               ('directory', str, MAX_DIRECTORY_LENGTH)],
+        chunk_size=1)
 
-    return channels
+def get_all_channels_from_table(h5):
+    table = channels_table.attach(h5)
+    return [Channel(**fields) for fields in table.iterdict()]
 
 class Channel(object):
 
@@ -30,48 +30,17 @@ class Channel(object):
         self.name = name
         self.directory = directory
 
-    def read_outputs(self):
-        outputs = []
-        for subdir in get_directories(self.directory):
-            try:
-                base_time = int(subdir)
-                if base_time < 0: raise ValueError
-            except ValueError:
-                continue
+    def todict(self):
+        return {'subsystem': self.subsystem, 
+                'name': self.name, 
+                'directory': self.directory}
 
-            subdir_path = join(self.directory, subdir)
-            for file in get_files(subdir_path):
-                output = self._parse_output(subdir_path, file)
-                if output: outputs.append(output)
-
-        return outputs
-
-    def read_latest_output(self):
-        subdir = sorted(get_directories(self.directory), reverse=True)[0]
-        subdir_path = join(self.directory, subdir)
-
-        # abusing that the files are named TIME_DURATION.xml
-        # if that ever changes, this method will no longer work
-        for file in sorted(get_files(subdir_path), reverse=True):
-            output = self._parse_output(subdir_path, file)
-            if output: return output
-        return None
-
-    def _parse_output(self, subdir_path, file):
-        match = _time_re.match(file)
-        if not match: return None
-
-        assert IFO == match.group('ifo')
-        assert self.subsystem == match.group('subsystem')
-        assert self.name == match.group('channel')
-
-        return Output(channel=self,
-                      time=int(match.group('time')),
-                      duration=int(match.group('duration')),
-                      path=join(subdir_path, file))
+    @property
+    def h5_path(self):
+        return "{0.subsystem}/{0.name}".format(self)
 
     def __repr__(self):
-        return "Channel(name='{0.name}', subsystem='{0.subsystem}', directory='{0.directory}'')"\
+        return "Channel(name='{0.name}', subsystem='{0.subsystem}', directory='{0.directory}')"\
                .format(self)
 
     def __str__(self):
@@ -79,21 +48,32 @@ class Channel(object):
                .format(self)
 
 
-class Output(object):
+burst_column_names = ["peak_time", "peak_time_ns", 
+                      "start_time", "start_time_ns",
+                      "duration",
+                      "central_freq", "bandwidth",
+                      "amplitude", "snr", "confidence",
+                      "chisq", "chisq_dof"]
+
+@memoized
+def _make_burst_dtype():
+    from glue.ligolw import types
+    from glue.ligolw.lsctables import SnglBurstTable
+    return [(name, types.ToNumPyType[SnglBurstTable.validcolumns[name]])
+            for name in burst_column_names]
+
+def get_bursts_table(channel):
+    return data.GenericTable("{0.h5_path}/bursts".format(channel),
+                             dtype=_make_burst_dtype())
+
+class Output(object):        
 
     def __init__(self, channel=None, time=-1, duration=-1, path=''):
         self.channel = channel
         self.time = time
         self.duration = duration
         self.path = path
-
-    def read(self):
-        from glue.ligolw import table
-        from glue.ligolw import lsctables
-        from glue.ligolw import utils
-
-        xml_doc = utils.load_filename(self.path, gz=False)
-        return xml_doc
+        self.bursts = None
 
     def __repr__(self):
         return "Output(channel='{0.channel.name}', time={0.time}, duration={0.duration}, path='{0.path}')"\
@@ -103,49 +83,3 @@ class Output(object):
         return "Output channel={0.channel.name}, time={0.time}, duration={0.duration}"\
                .format(self)
 
-
-class Spectrum(object):
-
-    def __init__(self, channel, time):
-        self.channel = channel
-        self.time = time
-
-    @property
-    def path(self):
-        name = "{0.channel.subsystem.ifo.name}-{0.channel.name}_PSD_{0.time}.xml"\
-               .format(self)
-        return os.path.join(self.channel.spectra_path, name)
-
-    def parse(self, stop_on=[]):
-        from glue.ligolw import table
-        from glue.ligolw import lsctables
-        from glue.ligolw import utils
-
-        xml_doc = utils.load_filename(self.path, gz=False)
-        print xml_doc
-
-    def __str__(self):
-        return "Spectrum t={0.time}".format(self)
-
-class Trigger(object):
-
-    def __init__(self, channel, time, duration):
-        self.channel = channel
-        self.time = time
-        self.duration = duration
-
-    @property
-    def path(self):
-        name = "{0.channel.subsystem.ifo.name}_{0.channel.name}_triggers_{0.time}_{0.duration}.xml"\
-               .format(self)
-        return os.path.join(self.channel.triggers_path, name)
-
-    def parse(self, stop_on=[]):
-        print "parsing trigger"
-
-    def __str__(self):
-        return "Trigger t={0.time} duration={0.duration}".format(self)
-
-if __name__ == "__main__":
-    channels = read_channels()
-    channels[0].read_latest_output().read()
