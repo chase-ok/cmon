@@ -11,7 +11,7 @@ def index():
 
 
 @bottle.get('/asd/times')
-#@succeed_or_fail
+@succeed_or_fail
 def get_times():
     with read_h5() as h5:
         times = strain_asd.attach(h5).times

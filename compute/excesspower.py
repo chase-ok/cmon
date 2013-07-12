@@ -4,6 +4,7 @@ from shared.excesspower import *
 import os
 from os.path import join
 import re
+from xml.sax._exceptions import SAXException
 
 
 _channel_re = re.compile('(?P<subsystem>[A-Z0-9]+)_(?P<channel>[_A-Z0-9]+)_excesspower\\Z')
@@ -79,7 +80,11 @@ def read_bursts(output):
 
 def append_bursts_to_h5(h5, output, bursts=None):
     if bursts is None:
-        bursts = read_bursts(output)
+        try:
+            bursts = read_bursts(output)
+        except SAXException as e:
+            print "WARNING: bad file: {0.path}. {1}".format(output, e)
+            return
 
     table = get_bursts_table(output.channel).attach(h5)
     for burst in bursts:
@@ -100,8 +105,13 @@ def sync_bursts(h5, channel):
     to_append = sorted((output for output in read_outputs(channel)
                         if output.time > latest_table_time),
                        key=lambda output: output.time)
-    for output in to_append:
+
+    print "Syncing {0}/{1} files...".format(len(to_append), len(read_outputs(channel)))
+    for i, output in enumerate(to_append):
+        if i % 100 == 0:
+            print "{0} completed".format(i)
         append_bursts_to_h5(h5, output)
+    print
 
 def _get_latest_output_time(table):
     return table.attrs.get("latest_output_time", 0)
@@ -118,6 +128,8 @@ def sync_bursts_process(interval=0.5):
     from time import sleep
 
     while True:
+        print "Checking bursts..."
+        
         with read_h5() as h5:
             not_synced = [channel for channel in
                           get_all_channels_from_table(h5)
@@ -132,5 +144,3 @@ def sync_bursts_process(interval=0.5):
 
 if __name__ == "__main__":
     sync_bursts_process()
-
-

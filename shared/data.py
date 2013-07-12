@@ -17,6 +17,7 @@ LOCK_WRITE_TIMEOUT = 10.0
 LOCK_READ_TIMEOUT = 5.0
 LOCK_POLL = 0.01
 
+# TODO: working, but could use some clean-up
 class ReadersWriterLock(object):
 
     def __init__(self, path, lock_class=MkdirLockFile):
@@ -26,7 +27,7 @@ class ReadersWriterLock(object):
         self.write_lock = lock_class(path + "-write", threaded=False)
         self.num_readers_lock = lock_class(path + "-num_readers", threaded=False)
         self.read_lock = lock_class(path + "-read", threaded=False)
-        self.num_readers_file = path + "-num_readers.txt"
+        self.num_readers_file = path + "-num_readers_{0}.txt"
 
     def acquire_write(self):
         self.waiting_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
@@ -60,38 +61,71 @@ class ReadersWriterLock(object):
 
     def acquire_read(self):
         self._wait_on(self.waiting_lock, LOCK_READ_TIMEOUT)
+        with self.waiting_lock:
+            with self.num_readers_lock:
+                self._local_file = self._get_local_num_readers_file()
+                num_readers = self._get_local_num_readers(self._local_file) + 1
+                self._set_local_num_readers(self._local_file, num_readers)
 
-        with self.num_readers_lock:
-            if not os.path.exists(self.num_readers_file):
-                self._create_num_readers()
-                num_readers = 1
-            else:
-                num_readers = self._get_num_readers() + 1
-            self._set_num_readers(num_readers)
-
-            if num_readers == 1:
-                self.read_lock.acquire()
-                os.chmod(self.read_lock.lock_file, 0o777)
+                if self._get_total_num_readers() == 1:
+                    self.read_lock.acquire()
+                    os.chmod(self.read_lock.lock_file, 0o777)
 
     def release_read(self):
         should_release_read = False
         with self.num_readers_lock:
-            num_readers = self._get_num_readers() - 1
-            self._set_num_readers(num_readers)
-            if num_readers == 0 and not self.about_to_write_lock.is_locked():
+            num_readers = self._get_local_num_readers(self._local_file) - 1
+            self._set_local_num_readers(self._local_file, num_readers)
+            if self._get_total_num_readers() == 0 \
+                    and not self.about_to_write_lock.is_locked():
                 self.read_lock.break_lock()
 
-    def _get_num_readers(self):
-        with open(self.num_readers_file, "r") as f:
-            return int(f.read())
+    # need to have multiple num_readers files so that cgi scripts and cluster
+    # processes can both write to them. (Cluster processes can't write to the
+    # CGI script num_readers and vice versa, but they can read from all)
 
-    def _set_num_readers(self, num_readers):
-        with open(self.num_readers_file, "w") as f:
+    def _get_local_num_readers_file(self):
+        for user in range(10):
+            try:
+                path = self.num_readers_file.format(user)
+                with open(path, "a"): pass
+                return path
+            except IOError as e:
+                if e.errno != 13:
+                    self._create_num_readers(path)
+                    return path
+
+        raise ValueError("Too many users!")
+
+    def _get_local_num_readers(self, file):
+        with open(file, "r") as f:
+            data = f.read()
+        if data:
+            return int(data)
+        else:
+            os.remove(file)
+            self._create_num_readers(file)
+            return 0
+
+    def _get_total_num_readers(self):
+        total = 0
+        for user in range(10):
+            try:
+                with open(self.num_readers_file.format(user), "r") as f:
+                    total += int(f.read())
+            except IOError as e:
+                return total
+        raise ValueError("Too many users!")
+
+    def _set_local_num_readers(self, file, num_readers):
+        with open(file, "w") as f:
             f.write(str(num_readers))
 
-    def _create_num_readers(self):
-        file = os.open(self.num_readers_file, os.O_WRONLY|os.O_CREAT, 0o777)
-        os.fdopen(file, 'w').close()
+    def _create_num_readers(self, file):
+        handle = os.open(file, os.O_WRONLY|os.O_CREAT, 0o0777)
+        os.fdopen(handle, 'w').close()
+        with open(file, 'w') as f:
+            f.write("0")
 
     def _wait_on(self, lock, timeout):
         end_time = time.time() + timeout
@@ -99,6 +133,7 @@ class ReadersWriterLock(object):
             if time.time() > end_time:
                 raise LockTimeout
             time.sleep(LOCK_POLL)
+
 
 def _make_data_path(name):
     return join(DATA_DIR, name)
@@ -161,7 +196,7 @@ class GenericTable(object):
     def attach(self, h5, reset=False):
         if not reset and self._h5 == h5:
             return self._impl
-        
+
         group, name = open_group(h5, self.path)
         if reset and name in group: 
             del group[name]
@@ -298,7 +333,7 @@ def open_channel(h5, channel, create_if_nonexistent=True):
     else:
         return h5[channel.type][channel.name]
 
-
+# TODO! Switch to a subclass of GenericTable instead of duplicating work
 class SpectralTable(object):
 
     def __init__(self, name, channel, seglen=2**14, stride=None):

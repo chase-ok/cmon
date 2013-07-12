@@ -23,6 +23,12 @@ def get_all_channels_from_table(h5):
     table = channels_table.attach(h5)
     return [Channel(**fields) for fields in table.iterdict()]
 
+def get_channel_from_table(h5, subsystem, name):
+    for fields in channels_table.attach(h5).iterdict():
+        if fields['subsystem'] == subsystem and fields['name'] == name:
+            return Channel(**fields)
+    raise ValueError('No such channel')
+
 class Channel(object):
 
     def __init__(self, subsystem='', name='', directory=''):
