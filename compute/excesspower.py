@@ -1,146 +1,164 @@
 
+from shared import data, channels as chn, excesspower as ep
 from shared.utils import get_directories, get_files, memoized
-from shared.excesspower import *
 import os
 from os.path import join
 import re
+import logging
 from xml.sax._exceptions import SAXException
 
-
-_channel_re = re.compile('(?P<subsystem>[A-Z0-9]+)_(?P<channel>[_A-Z0-9]+)_excesspower\\Z')
+_channel_re = re.compile(r'(?P<subsystem>[A-Z0-9]+)\-(?P<channel>[_A-Z0-9]+)_excesspower\Z')
+_fake_channel_re = re.compile(r'FAKE_(?P<channel>[_A-Z0-9]+)_excesspower\Z')
 _time_re = re.compile('(?P<ifo>[A-Z0-9]+)-(?P<subsystem>[A-Z0-9]+)_(?P<channel>[_A-Z0-9]+)_excesspower-(?P<time>[0-9]+)-(?P<duration>[0-9]+)\\.xml\\Z')
 
-def read_channels(root=EXCESS_POWER_ROOT):
-    channels = []
-    for directory in get_directories(root):
-        match = _channel_re.match(directory)
-        if not match: continue
+def update_channels(root=ep.TRIGGERS_ROOT):
+    for ifo in get_directories(root):
+        for directory in get_directories(join(root, ifo)):
+            match = _channel_re.match(directory)
+            if match:
+                ep.add_channel(ifo=ifo, 
+                               subsystem=match.group('subsystem'),
+                               name=match.group('channel'))
+                continue
+            
+            match = _fake_channel_re.match(directory)
+            if match:
+                ep.add_channel(ifo=ifo,
+                               subsystem='FAKE',
+                               name=match.group('channel'))
+                continue
+            
+            logging.warn('Unknown directory: {0}'.format(directory))
 
-        channels.append(Channel(subsystem=match.group('subsystem'),
-                                name=match.group('channel'),
-                                directory=join(root, directory)))
 
-    return channels
-
-def update_channels_table(h5, root=EXCESS_POWER_ROOT):
-    channels = read_channels(root=root)
-    table = channels_table.attach(h5, reset=True)
-    for channel in channels:
-        table.append_dict(**channel.todict())
-
-def read_outputs(channel):
-    outputs = []
-
-    for subdir in get_directories(channel.directory):
+def get_trigger_files(channel):
+    files = []
+    
+    dir = ep.get_trigger_directory(channel)
+    for subdir in get_directories(dir):
         try:
             base_time = int(subdir)
             if base_time < 0: raise ValueError
-        except ValueError:
-            continue
+        except ValueError: continue
 
-        subdir_path = join(channel.directory, subdir)
+        subdir_path = join(dir, subdir)
         for file in get_files(subdir_path):
-            output = _parse_output(channel, subdir_path, file)
-            if output: outputs.append(output)
+            file = _parse_trigger_file_path(channel, subdir_path, file)
+            if file: files.append(file)
+    
+    return files
 
-    return outputs 
 
-def read_latest_output(channel):
-    subdir = sorted(get_directories(channel.directory), reverse=True)[0]
-    subdir_path = join(channel.directory, subdir)
-
-    # abusing that the files are named TIME_DURATION.xml
+def get_latest_trigger_file(channel):
+    dir = ep.get_trigger_directory(channel)
+    subdir = sorted(get_directories(dir), reverse=True)[0]
+    subdir_path = join(dir, subdir)
+    
+    # abusing that the files are named ...{TIME}_{DURATION}.xml
     # if that ever changes, this method will no longer work
     for file in sorted(get_files(subdir_path), reverse=True):
-        output = _parse_output(channel, subdir_path, file)
-        if output: return output
+        file = _parse_trigger_file_path(channel, subdir_path, file)
+        if file: return file
     return None
 
-def _parse_output(channel, subdir_path, file):
+
+def _parse_trigger_file_path(channel, subdir_path, file):
     match = _time_re.match(file)
     if not match: return None
 
-    assert IFO == match.group('ifo')
+    assert channel.ifo == match.group('ifo')
     assert channel.subsystem == match.group('subsystem')
     assert channel.name == match.group('channel')
 
-    return Output(channel=channel,
-                  time=int(match.group('time')),
-                  duration=int(match.group('duration')),
-                  path=join(subdir_path, file))
+    return ep.TriggerFile(channel=channel,
+                          time=int(match.group('time')),
+                          duration=int(match.group('duration')),
+                          path=join(subdir_path, file))
 
-def read_bursts(output):
-    from glue.ligolw import ligolw, table, lsctables, utils
+
+def read_bursts(trigger_file):
+    from glue.ligolw import array, param, ligolw, table, lsctables, utils
     class ContentHandler(ligolw.LIGOLWContentHandler): pass
-    table.use_in(ContentHandler)
-    lsctables.use_in(ContentHandler)
+    for module in [array, param, table, lsctables]:
+        module.use_in(ContentHandler)
 
-    xml_doc = utils.load_filename(output.path, contenthandler=ContentHandler)
+    xml_doc = utils.load_filename(trigger_file.path,
+                                  contenthandler=ContentHandler)
     return table.get_table(xml_doc, lsctables.SnglBurstTable.tableName)
 
-def append_bursts_to_h5(h5, output, bursts=None):
+
+@data.use_h5(ep.H5_FILE, 'w')
+def append_bursts_to_h5(trigger_file, bursts=None, h5=None):
     if bursts is None:
         try:
-            bursts = read_bursts(output)
+            bursts = read_bursts(trigger_file)
         except SAXException as e:
-            print "WARNING: bad file: {0.path}. {1}".format(output, e)
+            logging.error('Bad file {0.path}: {1}'.format(trigger_file, e))
             return
 
-    table = get_bursts_table(output.channel).attach(h5)
+    table = ep.get_bursts_table(trigger_file.channel).attach(h5)
     for burst in bursts:
         table.append_row(tuple(getattr(burst, name) for name in 
-                               burst_column_names))
+                               ep.BURST_COLUMN_NAMES))
 
-    _set_latest_output_time(table, output.time)
+    _set_latest_trigger_time(table, trigger_file.time)
 
-def are_bursts_synced(h5, channel):
-    table = get_bursts_table(channel).attach(h5)
-    latest_table_time = _get_latest_output_time(table)
-    latest_file_time = read_latest_output(channel).time
+
+@data.use_h5(ep.H5_FILE, 'r')
+def are_bursts_synced(channel, h5=None):
+    table = ep.get_bursts_table(channel).attach(h5)
+    latest_table_time = _get_latest_trigger_time(table)
+    latest_file_time = get_latest_trigger_file(channel).time
     return latest_table_time == latest_file_time
 
-def sync_bursts(h5, channel):
-    table = get_bursts_table(channel).attach(h5)
-    latest_table_time = _get_latest_output_time(table)
-    to_append = sorted((output for output in read_outputs(channel)
-                        if output.time > latest_table_time),
-                       key=lambda output: output.time)
 
-    print "Syncing {0}/{1} files...".format(len(to_append), len(read_outputs(channel)))
-    for i, output in enumerate(to_append):
-        if i % 100 == 0:
+def sync_bursts(channel):
+    with data.read_h5(ep.H5_FILE) as h5:
+        table = ep.get_bursts_table(channel).attach(h5)
+        latest_table_time = _get_latest_trigger_time(table)
+        to_append = sorted((file for file in get_trigger_files(channel)
+                            if file.time > latest_table_time),
+                           key=lambda file: file.time)
+
+    #logging.debug("Syncing {0} files...".format(len(to_append)))
+    print "Syncing {0} files...".format(len(to_append))
+    for i, file in enumerate(to_append):
+        if i % 100 == 0: 
+            #logging.debug("{0} completed".format(i))
             print "{0} completed".format(i)
-        append_bursts_to_h5(h5, output)
-    print
+        append_bursts_to_h5(file)
 
-def _get_latest_output_time(table):
-    return table.attrs.get("latest_output_time", 0)
 
-def _set_latest_output_time(table, time):
-    table.attrs["latest_output_time"] = time
+def _get_latest_trigger_time(table):
+    return table.attrs.get("latest_trigger_time", 0)
 
-def setup_bursts_tables():
-    with write_h5() as h5:
-        for channel in get_all_channels_from_table(h5):
-            get_bursts_table(channel).attach(h5)
+def _set_latest_trigger_time(table, time):
+    table.attrs["latest_trigger_time"] = time
+
+
+@data.use_h5(ep.H5_FILE, 'w')
+def setup_bursts_tables(h5=None):
+    for channel in ep.get_all_channels():
+        ep.get_bursts_table(channel).attach(h5)
+
 
 def sync_bursts_process(interval=0.5):
     from time import sleep
 
     while True:
-        print "Checking bursts..."
-        
-        with read_h5() as h5:
-            not_synced = [channel for channel in
-                          get_all_channels_from_table(h5)
-                          if not are_bursts_synced(h5, channel)]
+        #logging.debug("Checking bursts...")
+        print "Checking bursts"
+        with data.read_h5(ep.H5_FILE) as h5:
+            not_synced = [channel for channel in ep.get_all_channels()
+                          if not are_bursts_synced(channel, h5=h5)]
 
         for channel in not_synced:
-            print "Not synced!", channel
-            with write_h5() as h5:
-                sync_bursts(h5, channel)
+            #logging.debug("Not synced {0}!".format(channel))
+            print "Not synced {0}!".format(channel)
+            sync_bursts(channel)
 
         sleep(interval)
+
 
 if __name__ == "__main__":
     sync_bursts_process()

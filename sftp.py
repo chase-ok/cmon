@@ -9,7 +9,7 @@ DIRECTORY = "."
 UPLOAD_SCRIPT = "upload"
 LOG_FILE = "./sftp.log"
 GRID_URL = "ldas-pcdev1.ligo-wa.caltech.edu"
-UPLOAD_DIRECTORY = "/home/chase.kernan/public_html/cgi-bin/cmon"
+UPLOAD_DIRECTORY = "/home/chase.kernan/public_html/cgi-bin/cmon-dev"
 
 _mod_times = dict()
 open(UPLOAD_SCRIPT, "w").close()
@@ -41,8 +41,9 @@ def daemon():
         #for dir in dirs_to_upload:
         #    f.write("mkdir {0}\n".format(dir))
         for path in files_to_upload:
+            if path.startswith("."): continue
             f.write("put {0} {0}\n".format(path))
-
+    
     with open(os.devnull, "w") as null:
         subprocess.call("gsisftp -b {0} {1}:{2}"\
                         .format(UPLOAD_SCRIPT, GRID_URL, UPLOAD_DIRECTORY),

@@ -10,8 +10,9 @@ from functools import wraps
 from collections import namedtuple
 import time
 import os
+import inspect
 
-DATA_DIR = "/home/chase.kernan/data/cmon"
+DATA_DIR = "/home/chase.kernan/data/cmon-dev"
 LOCK_DIR = "/home/cgi_output/chase.kernan/"
 LOCK_WRITE_TIMEOUT = 10.0
 LOCK_READ_TIMEOUT = 5.0
@@ -19,6 +20,17 @@ LOCK_POLL = 0.01
 
 # TODO: working, but could use some clean-up
 class ReadersWriterLock(object):
+    
+    @staticmethod
+    def clear_locks(path, lock_class=MkdirLockFile):
+        for lock in ["-waiting", "-writing", "-about_to_write", "-write", 
+                     "-num_readers", "-read"]:
+            lock_class(path + lock, threaded=False).break_lock()
+        
+        for i in range(10):
+            num_readers = path + "-num_readers{0}".format(i)
+            if os.path.exists(num_readers):
+                os.remove(num_readers)
 
     def __init__(self, path, lock_class=MkdirLockFile):
         self.path = path
@@ -51,7 +63,7 @@ class ReadersWriterLock(object):
             self.read_lock.release()
             self.waiting_lock.release()
             raise
-
+        
         self.about_to_write_lock.release()
 
     def release_write(self):
@@ -139,38 +151,77 @@ def _make_data_path(name):
     return join(DATA_DIR, name)
 
 def _make_lock_path(name):
-    return join(LOCK_DIR, name)
+    return join(LOCK_DIR, "dev-" + name)
 
-class write_h5:
+_currently_writing = {}
+_currently_reading = {}
+
+def clear_locks():
+    for name, num in _currently_writing.iteritems():
+        if num > 0:
+            ReadersWriterLock.clear_locks(_make_lock_path(name))
+        _currently_writing[name] = 0
+        
+    for read_file in _currently_reading:
+        if num > 0:
+            ReadersWriterLock.clear_locks(_make_lock_path(name))
+        _currently_reading[name] = 0
+
+class write_h5(object):
 
     def __init__(self, name):
         self.name = name
+        
+    @property
+    def num_writing(self):
+        return _currently_writing.get(self.name, 0)
+    @num_writing.setter
+    def num_writing(self, num):
+        _currently_writing[self.name] = num
 
     def __enter__(self):
-        self.lock = ReadersWriterLock(_make_lock_path(self.name))
-        self.lock.acquire_write()
+        self.num_writing += 1
+        if self.num_writing == 1:
+            self.lock = ReadersWriterLock(_make_lock_path(self.name))
+            self.lock.acquire_write()
+        
         self.h5 = h5py.File(_make_data_path(self.name), mode="a")
         return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.h5.flush()
-        self.h5.close()
-        self.lock.release_write()
+        self.num_writing -= 1
+        assert self.num_writing >= 0
+        if self.num_writing == 0:
+            self.h5.flush()
+            self.h5.close()
+            self.lock.release_write()
 
-class read_h5:
+class read_h5(object):
 
     def __init__(self, name):
         self.name = name
+        
+    @property
+    def num_reading(self):
+        return _currently_reading.get(self.name, 0)
+    @num_reading.setter
+    def num_reading(self, num):
+        _currently_reading[self.name] = num
 
     def __enter__(self):
-        self.lock = ReadersWriterLock(_make_lock_path(self.name))
-        self.lock.acquire_read()
+        self.num_reading += 1
+        if self.num_reading == 1:
+            self.lock = ReadersWriterLock(_make_lock_path(self.name))
+            self.lock.acquire_read()
         self.h5 = h5py.File(_make_data_path(self.name), mode="r")
         return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.h5.close()
-        self.lock.release_read()
+        self.num_reading -= 1
+        assert self.num_reading >= 0
+        if self.num_reading == 0:
+            self.h5.close()
+            self.lock.release_read()
 
 
 def open_group(h5, path):
@@ -179,6 +230,32 @@ def open_group(h5, path):
         h5 = h5.require_group(part)
     return h5, parts[-1]
 
+
+class use_h5(object):
+    
+    def __init__(self, h5_file, mode='r'):
+        self.h5_file = h5_file
+        self.mode = mode
+        assert mode in ['r', 'w']
+    
+    def __call__(self, func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if 'h5' in kwargs and kwargs['h5'] is not None:
+                if self.mode == 'w':
+                    assert kwargs['h5'].file.mode in ['r+', 'w', 'w-', 'a'], \
+                           "{0} needs a writable h5 file!".format(func)
+                return func(*args, **kwargs)
+            else:
+                if self.mode == 'r':
+                    method = read_h5(self.h5_file)
+                elif self.mode == 'w':
+                    method = write_h5(self.h5_file)
+                
+                with method as h5:
+                    kwargs['h5'] = h5
+                    return func(*args, **kwargs)
+        return wrapper
 
 class GenericTable(object):
 

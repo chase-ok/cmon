@@ -1,12 +1,11 @@
 
+from lockfile import LockBase
+from glue.gpstime import GpsSecondsFromPyUTC
 from bisect import bisect_left
 import collections
 import functools
 import time
 import os
-from lockfile import LockBase
-from glue.gpstime import GpsSecondsFromPyUTC
-
 
 class memoized(object):
     '''Decorator. Caches a function's return value each time it is called.
@@ -53,13 +52,14 @@ def utc_to_gps_time(utc):
     return GpsSecondsFromPyUTC(utc)
 
 
-FAKE_TIME_START = 959803215  # June 5th, 2010 at 1:00 pm PDT
+FAKE_TIME_START = 1043911908 # 959803215  # June 5th, 2010 at 1:00 pm PDT
 FAKE_TIME_MOD = 5*60*60
 
 
 def now_as_gps_time():
     #return utc_to_gps_time(time.time())
-    return FAKE_TIME_START + time.time() % FAKE_TIME_MOD
+    #return FAKE_TIME_START + time.time() % FAKE_TIME_MOD
+    return 1043924570.0
 
 
 def get_directories(root):

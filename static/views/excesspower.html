@@ -2,23 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>ASD!</title>
-    <link rel="stylesheet" type="text/css" href="static/css/default_plot.css"/>
-    <script src="static/js/d3.v3.min.js"></script>
+    <title>Excess Power {{ifo}}/{{subsystem}}/{{channel}}</title>
+    <link rel="stylesheet" type="text/css" href="{{root}}/static/css/default_plot.css"/>
+    <script src="{{root}}/static/js/d3.v3.min.js"></script>
     <style type="text/css">
-      #amplitude {
-        stroke: steelblue;
-        stroke-width: 1px;
-      }
-      #average {
-        stroke: orange;
-        stroke-width: 6px;
-      }
     </style>
   </head>
   <body>
-    <svg id="dualPlot" width="600" height="600"></svg>
-    <svg id="ratioPlot" width="600" height="600"></svg>
-    <script src="static/js/asd-plot.js"></script>
+    <svg id="plot" width="1400" height="750"></svg>
+    <script type="text/javascript">
+      var ifo = "{{ifo}}";
+      var subsystem = "{{subsystem}}";
+      var channel = "{{channel}}";
+      var startTime = {{startTime}};
+      var root = "{{root}}";
+    </script>
+    <script src="{{root}}/static/js/excess-power-plot.js"></script>
   </body>
 </html>
