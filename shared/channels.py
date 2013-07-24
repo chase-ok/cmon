@@ -36,6 +36,10 @@ class Channel(object):
         return "{0.ifo}/{0.subsystem}/{0.name}".format(self)
         
     @property
+    def file_path(self):
+        return "{0.ifo}-{0.subsystem}-{0.name}".format(self)
+        
+    @property
     def dt(self):
         return 1.0/self.properties['sampling']
         
@@ -52,6 +56,14 @@ class Channel(object):
 
     def __str__(self):
         return "Channel {0.h5_path}".format(self)
+        
+    def __eq__(self, other):
+        if isinstance(other, Channel):
+            return self.ifo == other.ifo and\
+                   self.subsystem == other.subsystem and\
+                   self.name == other.name
+        else:
+            return False
 
 
 @data.use_h5(H5_FILE, 'r')
@@ -73,7 +85,12 @@ def get_all_channels(h5=None):
     return [channel for ifo in get_all_ifos(h5=h5)
                     for subsystem in get_subsystems(ifo, h5=h5)
                     for channel in get_channels(ifo, subsystem, h5=h5)]
-                    
+
+@data.use_h5(H5_FILE, 'r')
+def get_channel(ifo, subsystem, name, h5=None):
+    return _parse_channel(h5[ifo][subsystem][name], 
+                          ifo=ifo, subsystem=subsystem, name=name)
+
 @data.use_h5(H5_FILE, 'w')
 def add_ifo(ifo, h5=None):
     return h5.require_group(ifo)

@@ -20,17 +20,6 @@ LOCK_POLL = 0.01
 
 # TODO: working, but could use some clean-up
 class ReadersWriterLock(object):
-    
-    @staticmethod
-    def clear_locks(path, lock_class=MkdirLockFile):
-        for lock in ["-waiting", "-writing", "-about_to_write", "-write", 
-                     "-num_readers", "-read"]:
-            lock_class(path + lock, threaded=False).break_lock()
-        
-        for i in range(10):
-            num_readers = path + "-num_readers{0}".format(i)
-            if os.path.exists(num_readers):
-                os.remove(num_readers)
 
     def __init__(self, path, lock_class=MkdirLockFile):
         self.path = path
@@ -40,6 +29,15 @@ class ReadersWriterLock(object):
         self.num_readers_lock = lock_class(path + "-num_readers", threaded=False)
         self.read_lock = lock_class(path + "-read", threaded=False)
         self.num_readers_file = path + "-num_readers_{0}.txt"
+        
+    def break_lock(self):
+        for lock in [self.waiting_lock, self.about_to_write_lock, 
+                     self.write_lock, self.num_readers_lock]:
+            lock.break_lock()
+        for i in range(10):
+            num_readers = self.num_readers_file.format(i)
+            if os.path.exists(num_readers):
+                os.remove(num_readers)
 
     def acquire_write(self):
         self.waiting_lock.acquire(timeout=LOCK_WRITE_TIMEOUT)
@@ -153,75 +151,106 @@ def _make_data_path(name):
 def _make_lock_path(name):
     return join(LOCK_DIR, "dev-" + name)
 
-_currently_writing = {}
-_currently_reading = {}
-
-def clear_locks():
-    for name, num in _currently_writing.iteritems():
-        if num > 0:
-            ReadersWriterLock.clear_locks(_make_lock_path(name))
-        _currently_writing[name] = 0
+class _H5Store(object):
+    
+    _FileRecord = namedtuple('H5FileRecord', 'h5 accessors lock')
+    _mode_map = {'r': 'r', 'w': 'a'}
+    
+    def __init__(self):
+        self._readers = {}
+        self._writers = {}
+    
+    def get_reader(self, name):
+        return self._get(name, self._readers, 'r')
         
-    for read_file in _currently_reading:
-        if num > 0:
-            ReadersWriterLock.clear_locks(_make_lock_path(name))
-        _currently_reading[name] = 0
+    def return_reader(self, name, h5):
+        self._return(name, self._readers, h5, 'r')
+        
+    def get_writer(self, name):
+        return self._get(name, self._writers, 'w')
+        
+    def return_writer(self, name, h5):
+        self._return(name, self._writers, h5, 'w')
+    
+    def _get(self, name, records, mode):
+        try:
+            record = records[name]
+        except KeyError:
+            lock = ReadersWriterLock(_make_lock_path(name))
+            if mode == 'w': 
+                lock.acquire_write()
+            elif mode == 'r':
+                lock.acquire_read()
+            
+            h5 = h5py.File(_make_data_path(name), mode=self._mode_map[mode])
+            record = self._FileRecord(accessors=0, lock=lock, h5=h5)
+        
+        records[name] = record._replace(accessors=record.accessors+1)
+        return record.h5
+    
+    def _return(self, name, records, h5, mode):
+        record = records[name]
+        assert record.h5 == h5
+        
+        num = record.accessors - 1
+        if num == 0:
+            if mode == 'w':
+                record.h5.flush()
+                record.h5.close()
+                record.lock.release_write()
+            elif mode == 'r':
+                record.h5.close()
+                record.lock.release_read()
+            
+            del records[name]
+        else:
+            records[name] = record._replace(accessors=num)
+        
+    def clear_locks(self):
+        for records in [self._readers, self._writers]:
+            for record in records.itervalues():
+                record.lock.break_lock()
+        self._readers.clear()
+        self._writers.clear()
+
+h5_store = _H5Store()
+import atexit
+atexit.register(h5_store.clear_locks)
 
 class write_h5(object):
 
-    def __init__(self, name):
+    def __init__(self, name, existing=None):
         self.name = name
-        
-    @property
-    def num_writing(self):
-        return _currently_writing.get(self.name, 0)
-    @num_writing.setter
-    def num_writing(self, num):
-        _currently_writing[self.name] = num
+        self.existing = existing
+        # TODO: if existing check that it's writable?
 
     def __enter__(self):
-        self.num_writing += 1
-        if self.num_writing == 1:
-            self.lock = ReadersWriterLock(_make_lock_path(self.name))
-            self.lock.acquire_write()
-        
-        self.h5 = h5py.File(_make_data_path(self.name), mode="a")
+        if self.existing is None:
+            self.h5 = h5_store.get_writer(self.name)
+        else:
+            self.h5 = self.existing
         return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.num_writing -= 1
-        assert self.num_writing >= 0
-        if self.num_writing == 0:
-            self.h5.flush()
-            self.h5.close()
-            self.lock.release_write()
+        if self.existing is None:
+            h5_store.return_writer(self.name, self.h5)
 
 class read_h5(object):
 
-    def __init__(self, name):
+    def __init__(self, name, existing=None):
         self.name = name
+        self.existing = existing
         
-    @property
-    def num_reading(self):
-        return _currently_reading.get(self.name, 0)
-    @num_reading.setter
-    def num_reading(self, num):
-        _currently_reading[self.name] = num
-
     def __enter__(self):
-        self.num_reading += 1
-        if self.num_reading == 1:
-            self.lock = ReadersWriterLock(_make_lock_path(self.name))
-            self.lock.acquire_read()
-        self.h5 = h5py.File(_make_data_path(self.name), mode="r")
+        if self.existing is None:
+            self.h5 = h5_store.get_reader(self.name)
+        else:
+            self.h5 = self.existing
         return self.h5
 
     def __exit__(self, type, value, traceback):
-        self.num_reading -= 1
-        assert self.num_reading >= 0
-        if self.num_reading == 0:
-            self.h5.close()
-            self.lock.release_read()
+        if self.existing is None:
+            h5_store.return_reader(self.name, self.h5)
 
 
 def open_group(h5, path):
@@ -257,15 +286,18 @@ class use_h5(object):
                     return func(*args, **kwargs)
         return wrapper
 
+
 class GenericTable(object):
 
-    def __init__(self, path, dtype=[], chunk_size=10, compression='lzf'):
+    def __init__(self, path, 
+                 dtype=[], chunk_size=100, compression='lzf', initial_size=0):
         # dtype should be a list of ('name', type) tuples
         self.path = path
         self.dtype = dtype
         self.row_class = namedtuple('TableRow', self.column_names)
         self.chunk_size = chunk_size
         self.compression = compression
+        self.initial_size = initial_size
 
         self._h5 = None
         self._impl = None
@@ -274,15 +306,15 @@ class GenericTable(object):
         if not reset and self._h5 == h5:
             return self._impl
 
-        group, name = open_group(h5, self.path)
-        if reset and name in group: 
-            del group[name]
+        group, self.name = open_group(h5, self.path)
+        if reset and self.name in group: 
+            del group[self.name]
 
-        if name in group:
-            dataset = group[name]
+        if self.name in group:
+            dataset = group[self.name]
         else:
-            dataset = group.require_dataset(name=name,
-                                            shape=(0,),
+            dataset = group.require_dataset(name=self.name,
+                                            shape=(self.initial_size,),
                                             dtype=self.dtype,
                                             chunks=(self.chunk_size,),
                                             maxshape=(None,),

@@ -1,5 +1,5 @@
 
-from shared.excesspower import triggers_source
+from shared.omicron import triggers_source
 from compute import triggers
 
 def triggers_process():

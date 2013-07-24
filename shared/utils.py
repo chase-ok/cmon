@@ -6,6 +6,12 @@ import collections
 import functools
 import time
 import os
+import logging
+import sys
+
+ch = logging.StreamHandler(sys.stdout)
+ch.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(ch)
 
 class memoized(object):
     '''Decorator. Caches a function's return value each time it is called.

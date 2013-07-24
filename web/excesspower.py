@@ -1,100 +1,78 @@
 
 import bottle
-from shared import excesspower
+from shared import excesspower as ep, channels, data
 from shared.utils import now_as_gps_time
 from web.utils import *
 import numpy as np
 
 @bottle.get('/excesspower')
 def index():
-    bottle.redirect("/excesspower/FAKE/STRAIN")
-
-@bottle.get('/excesspower/ifo')
-@succeed_or_fail
-def get_ifo():
-    return {'ifo': excesspower.IFO}
+    bottle.redirect("/excesspower/H1/FAKE/STRAIN")
 
 @bottle.get('/excesspower/channels')
 @succeed_or_fail
 def get_channels():
-    channels = _load_channels()
-    return {'channels': [channel.todict() for channel in channels]}
+    channels = ep.get_all_channels()
+    return {'channels': [convert_numpy_dict(channel.todict()) 
+                         for channel in channels]}
 
-@bottle.get('/excesspower/subsystems')
-@succeed_or_fail
-def get_subsystems():
-    subsystems = set(channel.subsystem for channel in _load_channels())
-    return {'subsystems': list(subsystems)}
-
-@bottle.get('/excesspower/<subsystem>')
-@succeed_or_fail
-def get_subsystem(subsystem):
-    channels = [channel.todict() for channel in _load_channels()
-                if channel.subsystem == subsystem]
-    if channels:
-        return {'channels': channels}
-    else:
-        raise ValueError("No such subsystem")
-
-@bottle.get('/excesspower/<subsystem>/<channel>')
-@bottle.view("excesspower.html")
-def get_channel(subsystem, channel):
+@bottle.get('/excesspower/<ifo>/<subsystem>/<name>')
+@bottle.view('excesspower.html')
+def get_channel(ifo, subsystem, name):
     try:
-        _load_channel(subsystem, channel)
+        channel = channels.get_channel(ifo, subsystem, name)
+        assert ep.has_excess_power(channel)
     except:
-        bottle.abort(404, "No such channel.")
+        bottle.abort(404, "No such excess power channel.")
+        
+    with data.read_h5(ep.BURSTS_H5_FILE) as h5:
+        bursts = ep.get_bursts_table(channel).attach(h5)
+        min_time = bursts[0].start_time
+        max_time = bursts[-1].start_time
 
     return {'root': WEB_ROOT,
-            'ifo': excesspower.IFO,
+            'ifo': ifo,
             'subsystem': subsystem,
-            'channel': channel,
-            'startTime': float(now_as_gps_time())}
+            'channel': name,
+            'min_time': min_time, 'max_time': max_time,
+            'start_time': float(now_as_gps_time())}
 
-@bottle.get('/excesspower/<subsystem>/<channel>/summary')
+@bottle.get('/excesspower/<ifo>/<subsystem>/<name>/summary')
 @succeed_or_fail
-def get_channel_summary(subsystem, channel):
-    channel = _load_channel(subsystem, channel)
-    with excesspower.read_h5() as h5:
-        bursts = excesspower.get_bursts_table(channel).attach(h5)
+def get_channel_summary(ifo, subsystem, name):
+    channel = channels.get_channel(ifo, subsystem, name)
+    with data.read_h5(ep.BURSTS_H5_FILE) as h5:
+        bursts = ep.get_bursts_table(channel).attach(h5)
         num_bursts = len(bursts)
+        return str(num_bursts)
         last_update = int(bursts.attrs['latest_output_time'])
     return {'channel': channel.todict(), 
             'num_bursts': num_bursts, 
             'last_update': last_update}
 
-@bottle.get('/excesspower/<subsystem>/<channel>/bursts_since/<time:int>')
+@bottle.get('/excesspower/<ifo>/<subsystem>/<name>/bursts_since/<time:int>')
 @succeed_or_fail
-def get_bursts_since(subsystem, channel, time):
-    limit = bottle.request.query.limit or 100
-    channel = _load_channel(subsystem, channel)
+def get_bursts_since(ifo, subsystem, name, time):
+    limit = bottle.request.query.limit or 1000
+    channel = channels.get_channel(ifo, subsystem, name)
 
-    with excesspower.read_h5() as h5:
-        table = excesspower.get_bursts_table(channel).attach(h5)
-        bursts = excesspower.get_bursts_since(table, time, limit=int(limit))
+    with data.read_h5(ep.BURSTS_H5_FILE) as h5:
+        table = ep.get_bursts_table(channel).attach(h5)
+        bursts = ep.get_bursts_since(table, time, limit=int(limit))
 
-    return {'bursts': map(_convert_numpy_dict, bursts)}
+    return {'bursts': map(convert_numpy_dict, bursts)}
 
-@bottle.get('/excesspower/<subsystem>/<channel>/bursts/<start_time:int>-<end_time:int>')
+@bottle.get('/excesspower/<ifo>/<subsystem>/<name>/bursts/<start_time:int>-<end_time:int>')
 @succeed_or_fail
-def get_bursts_since(subsystem, channel, start_time, end_time):
+def get_bursts_in_range(ifo, subsystem, name, start_time, end_time):
     limit = bottle.request.query.limit or 100
-    channel = _load_channel(subsystem, channel)
+    channel = channels.get_channel(ifo, subsystem, name)
 
-    with excesspower.read_h5() as h5:
-        table = excesspower.get_bursts_table(channel).attach(h5)
-        bursts = excesspower.get_bursts_in_time_range(table, 
+    with data.read_h5(ep.BURSTS_H5_FILE) as h5:
+        table = ep.get_bursts_table(channel).attach(h5)
+        bursts = ep.get_bursts_in_time_range(table, 
                  start_time, end_time, limit=int(limit))
 
-    return {'bursts': map(_convert_numpy_dict, bursts)}
+    return {'bursts': map(convert_numpy_dict, bursts)}
 
 
-def _load_channels():
-    with excesspower.read_h5() as h5:
-        return excesspower.get_all_channels_from_table(h5)
-
-def _load_channel(subsystem, name):
-    with excesspower.read_h5() as h5:
-        return excesspower.get_channel_from_table(h5, subsystem, name)
-
-def _convert_numpy_dict(d):
-    return dict((k, np.asscalar(v)) for k, v in d.iteritems())

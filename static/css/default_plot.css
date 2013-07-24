@@ -24,7 +24,3 @@ body {
 .grid path {
     stroke-width: 0;
 }
-
-.rect value {
-    shape-rendering: crispEdges;
-}

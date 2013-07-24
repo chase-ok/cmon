@@ -3,7 +3,7 @@ import bottle
 import numpy as np
 from functools import wraps
 
-WEB_ROOT = '/~chase.kernan/cgi-bin/cmon/cmon.py'
+WEB_ROOT = '/~chase.kernan/cgi-bin/cmon-dev/cmon.py'
 
 class QueryError(Exception):
     def __init__(self, reason):
@@ -58,3 +58,14 @@ def add_limit(values, default=None):
         raise QueryError(str(e))
 
     return values[:limit]
+    
+def convert_numpy_dict(d):
+    converted = {}
+    for key, value in d.iteritems():
+        if isinstance(value, basestring):
+            converted[key] = value
+        elif isinstance(value, dict):
+            converted[key] =  convert_numpy_dict(value)
+        else:
+            converted[key] = np.asscalar(value)
+    return converted
